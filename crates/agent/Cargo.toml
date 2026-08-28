@@ -1,6 +1,6 @@
 [package]
 name = "agent"
-version = "0.10.2"
+version = "0.10.3"
 edition = "2024"
 
 [dependencies]
@@ -12,6 +12,11 @@ tokio = { version = "1", features = ["full"] }
 # websocket
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
+
+# TLS crypto provider for wss:// (cloud mode). rustls 0.23 + ring needs the
+# process-default provider installed explicitly; aws-lc-rs is avoided so the
+# musl release build stays simple.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 
 # sqlite
 rusqlite = { version = "0.32", features = ["bundled"] }

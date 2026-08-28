@@ -78,6 +78,11 @@ async fn main() -> Result<()> {
         &[libsystemd::daemon::NotifyState::Status("starting".into())],
     );
 
+    // rustls 0.23 with the `ring` provider does not auto-select a process-level
+    // CryptoProvider; install it before any wss:// (cloud mode) connection.
+    // Harmless when only ws:// is used.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let args: Vec<String> = std::env::args().collect();
 
     // Handle --lock-cinnamon: lock the Cinnamon screensaver as the current session user and exit.
