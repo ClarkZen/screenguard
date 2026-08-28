@@ -31,7 +31,11 @@ pub struct PairingResult {
 
 /// Run the pairing handshake against the server at `server_url`.
 /// Blocks until `pairing_accepted` is received or the timeout expires.
-pub async fn run_pairing(server_url: &str) -> Result<PairingResult> {
+///
+/// `cloud_account` is `Some(email)` only in experimental cloud mode; it is put
+/// on the `pairing_request` so the cloud server can route the agent to the right
+/// tenant. `None` ⇒ the field is omitted from the wire entirely (self-hosted).
+pub async fn run_pairing(server_url: &str, cloud_account: Option<&str>) -> Result<PairingResult> {
     let hostname = gethostname();
     let mid = machine_id().unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
     let code = generate_pairing_code();
@@ -50,6 +54,7 @@ pub async fn run_pairing(server_url: &str) -> Result<PairingResult> {
         machine_id: mid,
         hostname,
         pairing_code: code,
+        cloud_account: cloud_account.map(str::to_string),
     };
     let msg = WssMessage::new(MSG_PAIRING_REQUEST, &request)?;
     write.send(Message::Text(msg.to_json()?)).await?;

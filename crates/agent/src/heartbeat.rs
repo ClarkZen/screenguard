@@ -61,6 +61,9 @@ pub struct HeartbeatLoop {
     locked_uids: Arc<tokio::sync::Mutex<HashSet<u32>>>,
     status_handle: Option<Arc<crate::status_dbus::Handle>>,
     web_filter: WebFilter,
+    /// Experimental cloud mode: present ⇒ sent on every `agent_hello` so the
+    /// cloud server can resolve this agent's tenant on each reconnect.
+    cloud_account: Option<String>,
 }
 
 impl HeartbeatLoop {
@@ -77,6 +80,7 @@ impl HeartbeatLoop {
         cache_ttl_hours: u64,
         status_handle: Option<Arc<crate::status_dbus::Handle>>,
         web_filter_available: bool,
+        cloud_account: Option<String>,
     ) -> Self {
         Self {
             db,
@@ -93,6 +97,7 @@ impl HeartbeatLoop {
             locked_uids: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             status_handle,
             web_filter: WebFilter::new(web_filter_available),
+            cloud_account,
         }
     }
 
@@ -768,6 +773,7 @@ impl HeartbeatLoop {
                     }
                     caps
                 },
+                cloud_account: self.cloud_account.clone(),
             },
         )
         .await

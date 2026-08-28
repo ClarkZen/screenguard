@@ -39,6 +39,11 @@ impl Db {
         let _ = self.conn.execute_batch(
             "ALTER TABLE cached_enforcement ADD COLUMN preserve_tasks_on_lock INTEGER NOT NULL DEFAULT 0",
         );
+        // Experimental cloud mode: records which cloud account (email) this
+        // pairing is bound to. NULL for self-hosted / local-network pairings.
+        let _ = self.conn.execute_batch(
+            "ALTER TABLE server_connection ADD COLUMN cloud_account TEXT",
+        );
         let _ = self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS agent_capabilities (
                 capability  TEXT PRIMARY KEY,
@@ -64,7 +69,8 @@ impl Db {
                 auth_token      TEXT NOT NULL,
                 agent_id        TEXT NOT NULL,
                 paired_at       INTEGER NOT NULL,
-                last_sync_at    INTEGER
+                last_sync_at    INTEGER,
+                cloud_account   TEXT
             );
 
             CREATE TABLE IF NOT EXISTS config_meta (
@@ -166,6 +172,42 @@ impl Db {
         self.set_agent_mode(AgentMode::Unpaired)?;
         Ok(())
     }
+
+    /// Wipe everything tied to the current pairing *and* the downloaded policy,
+    /// used when the agent is re-bound to a different cloud account (experimental
+    /// cloud mode). Unlike [`reset_pairing`], this also drops cached rules and
+    /// pending usage, because that data belongs to the old account/tenant and
+    /// must not be enforced against — or uploaded into — the new one.
+    ///
+    /// Hardware capability flags (`agent_capabilities`) are kept: they describe
+    /// the machine, not the tenant.
+    pub fn wipe_for_rebind(&self) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        // managed_users cascades to cached_schedules / cached_daily_limits /
+        // cached_adjustments / cached_enforcement / cached_blocked_domains,
+        // but delete explicitly so this does not depend on PRAGMA foreign_keys.
+        for table in [
+            "cached_blocked_domains",
+            "cached_adjustments",
+            "cached_daily_limits",
+            "cached_schedules",
+            "cached_enforcement",
+            "managed_users",
+            "usage_log",
+            "server_remaining",
+            "active_sessions",
+            "config_meta",
+            "server_connection",
+        ] {
+            tx.execute(&format!("DELETE FROM {table}"), [])?;
+        }
+        tx.execute(
+            "UPDATE agent_state SET mode = 'unpaired', offline_since = NULL WHERE id = 1",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 // ── server_connection ─────────────────────────────────────────────────────────
@@ -174,12 +216,14 @@ pub struct ServerConnection {
     pub server_url: String,
     pub auth_token: String,
     pub agent_id: String,
+    /// Cloud account (email) this pairing is bound to; `None` for local pairings.
+    pub cloud_account: Option<String>,
 }
 
 impl Db {
     pub fn get_server_connection(&self) -> Result<Option<ServerConnection>> {
         let mut stmt = self.conn.prepare(
-            "SELECT server_url, auth_token, agent_id FROM server_connection WHERE id = 1"
+            "SELECT server_url, auth_token, agent_id, cloud_account FROM server_connection WHERE id = 1"
         )?;
         let mut rows = stmt.query([])?;
         if let Some(row) = rows.next()? {
@@ -187,6 +231,7 @@ impl Db {
                 server_url: row.get(0)?,
                 auth_token: row.get(1)?,
                 agent_id: row.get(2)?,
+                cloud_account: row.get(3)?,
             }))
         } else {
             Ok(None)
@@ -196,9 +241,10 @@ impl Db {
     pub fn save_server_connection(&self, sc: &ServerConnection) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
         self.conn.execute(
-            "INSERT OR REPLACE INTO server_connection (id, server_url, auth_token, agent_id, paired_at)
-             VALUES (1, ?1, ?2, ?3, ?4)",
-            params![sc.server_url, sc.auth_token, sc.agent_id, now],
+            "INSERT OR REPLACE INTO server_connection
+             (id, server_url, auth_token, agent_id, paired_at, cloud_account)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+            params![sc.server_url, sc.auth_token, sc.agent_id, now, sc.cloud_account],
         )?;
         Ok(())
     }
@@ -681,10 +727,19 @@ impl Db {
 
 #[cfg(test)]
 mod tests {
-    use super::Db;
+    use super::{AgentMode, Db, ServerConnection};
     use common::models::{UserConfig, UserStatus};
     use rusqlite::Connection;
     use uuid::Uuid;
+
+    fn conn(url: &str, cloud_account: Option<&str>) -> ServerConnection {
+        ServerConnection {
+            server_url: url.to_string(),
+            auth_token: "tok".to_string(),
+            agent_id: "aid".to_string(),
+            cloud_account: cloud_account.map(str::to_string),
+        }
+    }
 
     fn user_config(uid: u32, preserve_tasks_on_lock: bool) -> UserConfig {
         UserConfig {
@@ -726,6 +781,86 @@ mod tests {
         db.migrate().unwrap();
 
         assert!(!db.get_cached_enforcement(1000).unwrap().preserve_tasks_on_lock);
+    }
+
+    #[test]
+    fn server_connection_roundtrips_cloud_account() {
+        let db = Db::open(Some(":memory:")).unwrap();
+
+        db.save_server_connection(&conn("wss://api.example/ws", Some("a@b.net"))).unwrap();
+        assert_eq!(
+            db.get_server_connection().unwrap().unwrap().cloud_account.as_deref(),
+            Some("a@b.net"),
+        );
+
+        // A local (no-account) pairing stores NULL and reads back as None.
+        db.save_server_connection(&conn("ws://lan/ws", None)).unwrap();
+        assert_eq!(db.get_server_connection().unwrap().unwrap().cloud_account, None);
+    }
+
+    #[test]
+    fn migration_adds_cloud_account_to_legacy_server_connection() {
+        // A DB created before this column existed.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE server_connection (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                server_url TEXT NOT NULL, auth_token TEXT NOT NULL,
+                agent_id TEXT NOT NULL, paired_at INTEGER NOT NULL, last_sync_at INTEGER
+             );
+             INSERT INTO server_connection (id, server_url, auth_token, agent_id, paired_at)
+             VALUES (1, 'ws://lan/ws', 't', 'a', 0);",
+        ).unwrap();
+        let db = Db { conn };
+
+        db.migrate().unwrap();
+
+        assert_eq!(db.get_server_connection().unwrap().unwrap().cloud_account, None);
+    }
+
+    #[test]
+    fn wipe_for_rebind_clears_pairing_and_policy_but_keeps_capabilities() {
+        let db = Db::open(Some(":memory:")).unwrap();
+        db.save_server_connection(&conn("wss://api.example/ws", Some("old@acct.net"))).unwrap();
+        db.save_config_version(47).unwrap();
+        db.save_capability("web_filter", true).unwrap();
+        let mut cfg = user_config(1000, true);
+        cfg.blocked_domains = vec!["youtube.com".to_string()];
+        db.apply_config_push(&[cfg]).unwrap();
+        db.add_usage_seconds(1000, "2026-08-28", 600).unwrap();
+        db.upsert_server_remaining(1000, 30, "warn").unwrap();
+        db.upsert_session(1000, "s1", false).unwrap();
+        db.set_agent_mode(AgentMode::Online).unwrap();
+
+        db.wipe_for_rebind().unwrap();
+
+        assert!(db.get_server_connection().unwrap().is_none());
+        assert_eq!(db.get_config_version().unwrap(), 0);
+        assert!(db.get_managed_uids().unwrap().is_empty());
+        assert!(db.get_cached_blocked_domains(1000).unwrap().is_empty());
+        assert_eq!(db.get_usage_seconds(1000, "2026-08-28").unwrap(), 0);
+        assert!(db.get_server_remaining(1000).unwrap().is_none());
+        assert!(db.get_all_session_ids(1000).unwrap().is_empty());
+        assert_eq!(db.get_agent_mode().unwrap(), AgentMode::Unpaired);
+        // Hardware capability describes the machine, not the tenant — kept.
+        assert_eq!(db.get_capability("web_filter").unwrap(), Some(true));
+    }
+
+    #[test]
+    fn reset_pairing_leaves_cached_policy_untouched() {
+        // Guards the backwards-compat promise: --reset must stay narrow.
+        let db = Db::open(Some(":memory:")).unwrap();
+        db.save_server_connection(&conn("ws://lan/ws", None)).unwrap();
+        db.apply_config_push(&[user_config(1000, true)]).unwrap();
+        db.add_usage_seconds(1000, "2026-08-28", 600).unwrap();
+        db.set_agent_mode(AgentMode::Online).unwrap();
+
+        db.reset_pairing().unwrap();
+
+        assert!(db.get_server_connection().unwrap().is_none());
+        assert_eq!(db.get_agent_mode().unwrap(), AgentMode::Unpaired);
+        assert_eq!(db.get_managed_uids().unwrap(), vec![1000]);
+        assert_eq!(db.get_usage_seconds(1000, "2026-08-28").unwrap(), 600);
     }
 
     #[test]

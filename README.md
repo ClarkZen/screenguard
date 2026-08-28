@@ -204,6 +204,49 @@ cache_ttl_hours     = 48
 min_uid             = 1000  # ignore system accounts below this UID
 ```
 
+### Cloud mode (experimental)
+
+> ⚠️ **Experimental and unsupported.** The hosted cloud service, its endpoint,
+> and this enrolment flow may change or be removed. Self-hosted / LAN use is
+> unaffected — skip this section entirely and the agent behaves exactly as
+> documented above.
+
+Instead of running your own server on the LAN, an agent can pair with the hosted
+service at `api.screenguard.cc` and report to a cloud account:
+
+```bash
+screenguard-agent --cloud-account you@example.com
+```
+
+or persist it (recommended, so restarts stay in cloud mode):
+
+```toml
+# /etc/screenguard/agent.toml
+cloud_account = "you@example.com"
+# cloud_url  = "wss://api.screenguard.cc/ws"   # override the endpoint if needed
+```
+
+- The account is an **email that identifies your cloud account**, not a server
+  address. Use `--server-url wss://host/ws` (or `cloud_url`) to point at a
+  different / self-run cloud endpoint.
+- With a cloud account set, mDNS discovery and `server_url` are ignored.
+- The machine then shows up as *pending* under that account and has to be
+  approved there before it does anything.
+- **Starting with a _different_ cloud account re-pairs from scratch.** If the
+  agent was already paired (to a LAN server or another cloud account) and you
+  start it with a different `--cloud-account`, it clears the old pairing *and*
+  all downloaded rules and usage counters, then pairs anew. **The machine is
+  unmanaged until the new account approves it**, and today's screen-time counter
+  is reset to zero. Restarting with the *same* account, or with no account, does
+  **not** wipe anything. To leave cloud mode, or to move to a new server IP, run
+  `screenguard-agent --reset` (see "Agent reset" below).
+- Persist `cloud_account` in `agent.toml` if you paired via the CLI flag —
+  otherwise the flag is gone on the next restart. The agent still reconnects to
+  the cloud (the binding is saved), but keeping it in the config is clearer.
+- An unknown / mistyped account gives no error — the agent just stays *pending*
+  forever. This is intentional (it stops the service being used to test which
+  emails have accounts).
+
 Environment variable overrides:
 
 | Variable | Description |

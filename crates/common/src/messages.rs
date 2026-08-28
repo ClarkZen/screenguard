@@ -32,6 +32,11 @@ pub struct AgentHello {
     pub last_config_version: i64,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Cloud tenant binding (email). Only present when the agent was started in
+    /// cloud mode (`--cloud-account`). Absent on the wire for self-hosted agents,
+    /// so an old server never sees the field. **Experimental.**
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_account: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +68,11 @@ pub struct PairingRequest {
     pub machine_id: String,
     pub hostname: String,
     pub pairing_code: String,
+    /// Cloud tenant binding (email). Only present when the agent was started in
+    /// cloud mode (`--cloud-account`). Absent on the wire for self-hosted agents.
+    /// **Experimental.**
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_account: Option<String>,
 }
 
 // ── Server → Agent ────────────────────────────────────────────────────────────
