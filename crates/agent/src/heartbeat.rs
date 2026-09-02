@@ -878,22 +878,54 @@ fn read_machine_id() -> String {
         .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
 }
 
+/// Best-effort detection of the host's IANA timezone name (e.g. `Europe/Warsaw`).
+///
+/// The server evaluates schedule windows, the daily-limit weekday, and the
+/// usage-counter rollover in whatever zone the agent reports here, so a wrong
+/// answer silently shifts enforcement away from the user's wall clock.
 fn local_timezone() -> String {
     // Debian/Ubuntu style: plain text file.
     if let Ok(s) = std::fs::read_to_string("/etc/timezone") {
         let s = s.trim().to_string();
-        if !s.is_empty() { return s; }
+        if !s.is_empty() {
+            tracing::info!("Detected system timezone {s} (from /etc/timezone)");
+            return s;
+        }
     }
-    // Fedora/RHEL/Arch style: /etc/localtime is a symlink into /usr/share/zoneinfo/.
+    // systemd/Fedora/RHEL/Arch style: /etc/localtime is a symlink into a
+    // zoneinfo tree. `timedatectl set-timezone` writes a *relative* link
+    // (`../usr/share/zoneinfo/Europe/Warsaw`), and the path may be
+    // `/usr/lib/zoneinfo/` on some distros, so match on the last `zoneinfo/`
+    // segment rather than a fixed absolute prefix. Also handles multi-segment
+    // zones such as `America/Argentina/Buenos_Aires`.
     if let Ok(path) = std::fs::read_link("/etc/localtime") {
         let s = path.to_string_lossy();
-        if let Some(tz) = s.strip_prefix("/usr/share/zoneinfo/") {
-            return tz.to_string();
+        if let Some(idx) = s.rfind("zoneinfo/") {
+            let tz = s[idx + "zoneinfo/".len()..].trim_matches('/').to_string();
+            if !tz.is_empty() {
+                tracing::info!("Detected system timezone {tz} (from /etc/localtime)");
+                return tz;
+            }
+        }
+    }
+    // Older Fedora/RHEL ship /etc/localtime as a plain copy, not a symlink, so
+    // the read_link above fails outright — ask systemd directly.
+    if let Ok(out) = std::process::Command::new("timedatectl")
+        .args(["show", "-p", "Timezone", "--value"])
+        .output()
+    {
+        if out.status.success() {
+            let tz = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !tz.is_empty() && tz != "n/a" {
+                tracing::info!("Detected system timezone {tz} (from timedatectl)");
+                return tz;
+            }
         }
     }
     tracing::warn!(
-        "Could not detect system timezone from /etc/timezone or /etc/localtime — \
-         falling back to UTC. Schedule windows will be evaluated in UTC. \
+        "Could not detect system timezone from /etc/timezone, /etc/localtime, or \
+         timedatectl — falling back to UTC. Schedule windows, the daily-limit \
+         weekday, and usage rollover will all be evaluated in UTC. \
          Fix with: timedatectl set-timezone <your-timezone>"
     );
     "UTC".to_string()
