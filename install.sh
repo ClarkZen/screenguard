@@ -62,22 +62,35 @@ need_cmd systemctl
 
 MODE="install"
 DB_URL=""
+CLOUD_ACCOUNT=""
 for arg in "$@"; do
     case $arg in
         --update)    MODE="update"    ;;
         --uninstall) MODE="uninstall" ;;
         --db-url=*)  DB_URL="${arg#--db-url=}" ;;
+        --cloud-account=*)
+            CLOUD_ACCOUNT="${arg#--cloud-account=}"
+            [[ $CLOUD_ACCOUNT == *@* ]] || error "--cloud-account expects an email address, got: ${CLOUD_ACCOUNT}"
+            ;;
         --help|-h)
-            echo "Usage: sudo bash install.sh [--update | --uninstall] [--db-url=<postgres://...>]"
-            echo "  (no flag)              Fresh install — interactive, SQLite by default"
-            echo "  --update               Download latest binaries, restart services"
-            echo "  --uninstall            Stop services and remove all ScreenGuard files"
-            echo "  --db-url=<URL>         Use Postgres instead of SQLite (server only)"
-            echo "                         Example: --db-url=postgres://user:pass@host/dbname"
+            echo "Usage: sudo bash install.sh [--update | --uninstall] [--db-url=<postgres://...>] [--cloud-account=<email>]"
+            echo "  (no flag)                 Fresh install — interactive, SQLite by default"
+            echo "  --update                  Download latest binaries, restart services"
+            echo "  --uninstall               Stop services and remove all ScreenGuard files"
+            echo "  --db-url=<URL>            Use Postgres instead of SQLite (server only)"
+            echo "                            Example: --db-url=postgres://user:pass@host/dbname"
+            echo "  --cloud-account=<email>   Agent reports to the hosted cloud service instead"
+            echo "                            of a LAN server (experimental). Fresh agent-only installs."
             exit 0
             ;;
     esac
 done
+
+# --cloud-account only makes sense on a fresh install; --update / --uninstall
+# never reach the config writer, so a switch there would silently do nothing.
+if [[ -n $CLOUD_ACCOUNT && $MODE != install ]]; then
+    error "--cloud-account only applies to a fresh install. To switch an existing agent, add 'cloud_account = \"${CLOUD_ACCOUNT}\"' to ${CONFIG_DIR}/agent.toml and restart screenguard-agent."
+fi
 
 # ── architecture ──────────────────────────────────────────────────────────────
 ARCH=$(uname -m)
@@ -333,22 +346,44 @@ while true; do
     esac
 done
 
+# Cloud mode is an agent-only path — it makes no sense alongside a local server.
+if [[ -n $CLOUD_ACCOUNT && ${INSTALL_SERVER:-0} -eq 1 ]]; then
+    error "--cloud-account is for agent-only installs (choice 1), not a local server."
+fi
+
 # ── agent: server discovery ───────────────────────────────────────────────────
 SERVER_URL=""
-if [[ ${INSTALL_AGENT:-0} -eq 1 && ${INSTALL_SERVER:-0} -eq 0 ]]; then
+if [[ -n $CLOUD_ACCOUNT ]]; then
+    # --cloud-account was passed on the command line: skip the discovery prompt.
+    warn "Cloud mode is experimental and unsupported — see README 'Cloud mode'."
+    info "Agent will report to cloud account: ${CLOUD_ACCOUNT}"
+elif [[ ${INSTALL_AGENT:-0} -eq 1 && ${INSTALL_SERVER:-0} -eq 0 ]]; then
     header "How should the agent find the server?"
     echo "  1) mDNS auto-discovery  — server broadcasts itself on the local network"
     echo "  2) Fixed URL            — you know the server's address"
+    echo "  3) Cloud account        — hosted service at api.screenguard.cc (experimental)"
     echo
     while true; do
-        ask "Enter choice [1-2]" disc
+        ask "Enter choice [1-3]" disc
         case $disc in
             1) SERVER_URL=""; break ;;
             2)
                 ask "Server URL (e.g. http://192.168.1.100:8080)" SERVER_URL
                 [[ -n $SERVER_URL ]] && break || warn "URL cannot be empty"
                 ;;
-            *) warn "Please enter 1 or 2" ;;
+            3)
+                warn "Cloud mode is experimental and unsupported — see README 'Cloud mode'."
+                ask "Cloud account email" CLOUD_ACCOUNT
+                if [[ -z $CLOUD_ACCOUNT ]]; then
+                    warn "Account cannot be empty"
+                elif [[ $CLOUD_ACCOUNT != *@* ]]; then
+                    warn "That doesn't look like an email address"
+                    CLOUD_ACCOUNT=""
+                else
+                    SERVER_URL=""; break
+                fi
+                ;;
+            *) warn "Please enter 1, 2, or 3" ;;
         esac
     done
 elif [[ ${INSTALL_AGENT:-0} -eq 1 && ${INSTALL_SERVER:-0} -eq 1 ]]; then
@@ -386,7 +421,9 @@ if [[ ${INSTALL_SERVER:-0} -eq 1 ]]; then
 fi
 [[ $INSTALL_WEBUI -eq 1 ]] && echo "  • Install web UI  (port ${WEBUI_PORT})"
 if [[ ${INSTALL_AGENT:-0} -eq 1 ]]; then
-    if [[ -n $SERVER_URL ]]; then
+    if [[ -n $CLOUD_ACCOUNT ]]; then
+        echo "  • Install agent   (cloud account: ${CLOUD_ACCOUNT} — experimental)"
+    elif [[ -n $SERVER_URL ]]; then
         echo "  • Install agent   (server: ${SERVER_URL})"
     else
         echo "  • Install agent   (mDNS auto-discovery)"
@@ -523,7 +560,14 @@ if [[ ${INSTALL_AGENT:-0} -eq 1 ]]; then
 
     if [[ ! -f "${CONFIG_DIR}/agent.toml" ]]; then
         # Derive web UI URL: same host as server, web UI port.
-        if [[ -n $SERVER_URL ]]; then
+        if [[ -n $CLOUD_ACCOUNT ]]; then
+            cat > "${CONFIG_DIR}/agent.toml" <<EOF
+# Cloud mode (experimental) — this agent reports to the hosted service instead
+# of a LAN server. mDNS discovery and server_url are ignored while this is set.
+cloud_account = "${CLOUD_ACCOUNT}"
+# cloud_url = "wss://api.screenguard.cc/ws"   # override the endpoint if needed
+EOF
+        elif [[ -n $SERVER_URL ]]; then
             _server_host=$(echo "$SERVER_URL" | sed 's|^[a-z]*://||;s|:.*||;s|/.*||')
             _webui_port=${WEBUI_PORT:-5000}
             cat > "${CONFIG_DIR}/agent.toml" <<EOF
@@ -535,9 +579,16 @@ EOF
 # server_url = "http://192.168.1.100:8080"
 # Leave commented out to use mDNS auto-discovery.
 # webui_url = "http://192.168.1.100:5000"
+#
+# Cloud mode (experimental): report to the hosted service instead of a LAN server.
+# cloud_account = "you@example.com"
 EOF
         fi
         info "Created ${CONFIG_DIR}/agent.toml"
+    elif [[ -n $CLOUD_ACCOUNT ]]; then
+        warn "Config already exists: ${CONFIG_DIR}/agent.toml"
+        warn "Add this line to it manually to enable cloud mode, then restart the agent:"
+        warn "  cloud_account = \"${CLOUD_ACCOUNT}\""
     else
         warn "Config already exists, skipping: ${CONFIG_DIR}/agent.toml"
     fi
@@ -614,6 +665,13 @@ if [[ ${INSTALL_AGENT:-0} -eq 1 ]]; then
     echo -e "  Logs:    journalctl -u screenguard-agent -f"
     echo -e "  Config:  ${CONFIG_DIR}/agent.toml"
     echo -e "  Reset:   screenguard-agent --reset"
+    if [[ -n $CLOUD_ACCOUNT ]]; then
+        echo
+        echo -e "  Cloud mode (experimental): account ${CLOUD_ACCOUNT}"
+        echo -e "  The machine will show as 'pending' in that account — approve it there to pair."
+    else
+        echo -e "  Pairing: watch the logs for a pairing code, then accept it in the web UI."
+    fi
 fi
 
 echo

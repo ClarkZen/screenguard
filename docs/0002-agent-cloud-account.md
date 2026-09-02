@@ -80,6 +80,12 @@ ignores the field if a cloud agent ever talks to one.
   account saved with the pairing` — so a plain `systemctl restart` (unit file
   carries no flag, `agent.toml` maybe not edited) still reconnects into the right
   tenant instead of silently falling back to `public`.
+- **Installer support** (`install.sh`): `--cloud-account=<email>` flag and an
+  interactive "Cloud account" choice in the agent's server-discovery prompt. Both
+  just write `cloud_account` into a freshly created `agent.toml`; an existing
+  config is never rewritten (the script prints the line to add by hand instead).
+  Rejected alongside a local-server install. Validates the `@` up front, same as
+  the agent.
 
 ### 3. Server selection — done
 - `cloud_account` set ⇒ mDNS/local discovery is **skipped**; endpoint is

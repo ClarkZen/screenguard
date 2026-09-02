@@ -63,7 +63,7 @@ The server and agent can run on the same machine or on separate machines. The ag
 curl -fsSL https://github.com/adambie/screenguard/releases/latest/download/install.sh | sudo bash
 ```
 
-The installer will ask whether to install the **agent**, the **server**, or **both**, then configure and start the appropriate systemd services.
+The installer will ask whether to install the **agent**, the **server**, or **both**, then configure and start the appropriate systemd services. For an agent, it asks how to reach the server: mDNS auto-discovery, a fixed URL, or a cloud account (see [Cloud mode](#cloud-mode-experimental)).
 
 ### Update
 
@@ -212,19 +212,37 @@ min_uid             = 1000  # ignore system accounts below this UID
 > documented above.
 
 Instead of running your own server on the LAN, an agent can pair with the hosted
-service at `api.screenguard.cc` and report to a cloud account:
+service at `api.screenguard.cc` and report to a cloud account.
+
+**At install time.** Pass the account to the installer and it writes the config
+for you:
 
 ```bash
-screenguard-agent --cloud-account you@example.com
+curl -fsSL https://github.com/adambie/screenguard/releases/latest/download/install.sh \
+  | sudo bash -s -- --cloud-account=you@example.com
 ```
 
-or persist it (recommended, so restarts stay in cloud mode):
+The interactive installer offers the same thing: choose **Agent only**, then pick
+**Cloud account** when it asks how to reach the server. Either way it creates
+`/etc/screenguard/agent.toml` with `cloud_account` set. (If `agent.toml` already
+exists it is not modified — add the line by hand, see below.)
+
+**On an already-installed agent.** Add the account to the config and restart:
 
 ```toml
 # /etc/screenguard/agent.toml
 cloud_account = "you@example.com"
 # cloud_url  = "wss://api.screenguard.cc/ws"   # override the endpoint if needed
 ```
+
+```bash
+sudo systemctl restart screenguard-agent
+```
+
+You can also pass it once on the command line (`screenguard-agent
+--cloud-account you@example.com`), but the systemd unit carries no flags, so
+without the config line the agent falls back to its saved binding on the next
+restart — persisting it in `agent.toml` is the supported way.
 
 - The account is an **email that identifies your cloud account**, not a server
   address. Use `--server-url wss://host/ws` (or `cloud_url`) to point at a
@@ -240,9 +258,6 @@ cloud_account = "you@example.com"
   is reset to zero. Restarting with the *same* account, or with no account, does
   **not** wipe anything. To leave cloud mode, or to move to a new server IP, run
   `screenguard-agent --reset` (see "Agent reset" below).
-- Persist `cloud_account` in `agent.toml` if you paired via the CLI flag —
-  otherwise the flag is gone on the next restart. The agent still reconnects to
-  the cloud (the binding is saved), but keeping it in the config is clearer.
 - An unknown / mistyped account gives no error — the agent just stays *pending*
   forever. This is intentional (it stops the service being used to test which
   emails have accounts).
