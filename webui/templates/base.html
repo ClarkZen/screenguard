@@ -27,6 +27,11 @@
       --er: #dc2626;    /* red             */
       --r:  8px;
       --r2: 6px;
+      /* Shared design language with the screenguard.cc landing page
+         (kept in its own repo) — keep the two in step. */
+      --nav:  rgba(255,255,255,.82);   /* translucent sticky nav          */
+      --glow: rgba(37,99,235,.10);     /* ambient accent behind page top  */
+      --ring: rgba(37,99,235,.12);     /* focus ring                      */
     }
     [data-bs-theme="dark"] {
       --c0: #0e1117;
@@ -35,6 +40,9 @@
       --bd: #2c3150;
       --t1: #dde1f0;
       --t2: #8490ac;
+      --nav:  rgba(14,17,23,.86);
+      --glow: rgba(37,99,235,.16);
+      --ring: rgba(37,99,235,.20);
     }
 
     /* wire custom palette into Bootstrap's variable system */
@@ -67,22 +75,39 @@
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui,
                    'Helvetica Neue', Arial, sans-serif;
       font-size: 14px;
-      line-height: 1.6;
+      line-height: 1.65;
       background: var(--c0);
       color: var(--t1);
+      -webkit-font-smoothing: antialiased;
     }
+    /* Ambient accent wash, matching the landing page's hero. Fixed and behind
+       everything, so it does not scroll away or intercept clicks. */
+    body::before {
+      content: "";
+      position: fixed;
+      top: -320px; left: 50%;
+      width: 1100px; height: 620px;
+      transform: translateX(-50%);
+      background: radial-gradient(closest-side, var(--glow), transparent 72%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    body > * { position: relative; z-index: 1; }
+    h1, h2, h3, h4, h5, h6 { letter-spacing: -.022em; line-height: 1.25; }
 
     /* ── navbar ────────────────────────────────────────────────────── */
     .sg-nav {
-      height: 52px;
-      background: var(--c1) !important;
+      height: 56px;
+      background: var(--nav) !important;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
       border-bottom: 1px solid var(--bd);
       padding: 0;
     }
     .sg-nav .container-xl { height: 100%; align-items: center; }
     .sg-nav .navbar-brand {
-      font-weight: 600;
-      font-size: 14px;
+      font-weight: 680;
+      font-size: 14.5px;
       letter-spacing: -.02em;
       color: var(--t1) !important;
       padding: 0;
@@ -104,6 +129,13 @@
       border: 1px solid var(--bd);
       border-radius: var(--r);
       box-shadow: none;
+      transition: border-color .14s, transform .14s;
+    }
+    /* Only cards that are themselves links lift — a hover effect on a static
+       panel reads as broken affordance. */
+    a > .card:hover, .card.sg-hover:hover {
+      border-color: var(--ac);
+      transform: translateY(-1px);
     }
     /* kill Bootstrap's default gray card-header bg */
     .card-header {
@@ -138,7 +170,7 @@
       background: var(--c0);
       border-color: var(--ac);
       color: var(--t1);
-      box-shadow: 0 0 0 3px rgba(37,99,235,.12);
+      box-shadow: 0 0 0 3px var(--ring);
     }
     .form-control::placeholder { color: var(--t2); opacity: .7; }
     .form-control-sm, .form-select-sm { font-size: 14px; min-height: 38px; }
@@ -159,7 +191,7 @@
     /* ── buttons ───────────────────────────────────────────────────── */
     .btn {
       font-size: 15px;
-      font-weight: 500;
+      font-weight: 560;
       border-radius: var(--r2);
       padding: 10px 20px;
       min-height: 44px;
@@ -190,6 +222,10 @@
       color: var(--er);
     }
     .btn.disabled, .btn:disabled { opacity: .4; pointer-events: none; }
+    .btn:focus-visible, .sg-theme-btn:focus-visible, .nav-link:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px var(--ring);
+    }
 
     /* ── progress ──────────────────────────────────────────────────── */
     .progress {
@@ -204,8 +240,9 @@
     /* ── badges ────────────────────────────────────────────────────── */
     .badge {
       font-size: 11.5px;
-      font-weight: 500;
-      padding: 3px 9px;
+      font-weight: 550;
+      padding: 3px 10px;
+      border-radius: 999px;
     }
     .text-bg-success { background: #dcfce7 !important; color: #15803d !important; }
     .text-bg-warning { background: #fef9c3 !important; color: #a16207 !important; }
@@ -234,6 +271,7 @@
       padding-bottom: 10px;
     }
     .table td, .table th { border-color: var(--bd); vertical-align: middle; }
+    .table tbody tr { transition: background .12s; }
     .table.bg-white { background: var(--c1) !important; }
     .rounded { border-radius: var(--r) !important; }
 
