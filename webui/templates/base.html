@@ -106,6 +106,9 @@
     }
     .sg-nav .container-xl { height: 100%; align-items: center; }
     .sg-nav .navbar-brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
       font-weight: 680;
       font-size: 14.5px;
       letter-spacing: -.02em;
@@ -317,7 +320,7 @@
 {% if session.username %}
 <nav class="navbar navbar-expand-md sg-nav sticky-top">
   <div class="container-xl">
-    <a class="navbar-brand" href="{{ url_for('dashboard') }}">ScreenGuard</a>
+    <a class="navbar-brand" href="{{ url_for('dashboard') }}">🛡️ ScreenGuard</a>
     <button class="navbar-toggler border-0" type="button"
             data-bs-toggle="collapse" data-bs-target="#sgNav">
       <span class="navbar-toggler-icon"></span>
