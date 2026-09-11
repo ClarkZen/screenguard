@@ -13,7 +13,7 @@
 #
 # Edited to add .env variables for building with portainer from git
 # Quickstart:
-#   1. Edit .env.example for local values.
+#   1. Edit .env.example for local values, or provide through Portainer webui.
 #   2. docker compose up -d
 #   3. Open http://<server-ip>:5000 and create an admin account.
 #   4. For VLAN clients, specify server IP
@@ -28,7 +28,7 @@ services:
     image: screenguard-server
     network_mode: host
     volumes:
-      - ${DOCKER_VOLUME}/screenguard-data:/data # set docker data volulme mount point in ENV file
+      - ${DOCKER_VOLUME}/screenguard-data:/data # set docker data volume mount point in ENV file
     environment:
       SCREENGUARD_SERVER_DB: /data/server.db
       SCREENGUARD_SERVER_JWT_SECRET: ${SG_SERVER_SECRET}  # set a strong random value in ENV file
