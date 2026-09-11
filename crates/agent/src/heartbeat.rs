@@ -302,9 +302,13 @@ impl HeartbeatLoop {
                     db.save_config_version(push.config_version)?;
                 }
 
-                // If preserve_tasks_on_lock was turned off for a uid currently armed in the
-                // re-lock loop, evict it so the next RemainingUpdate spawns a fresh
-                // execute_lock that reads the new setting and runs the terminate path.
+                // If preserve_tasks_on_lock is off for a uid currently armed in the re-lock
+                // loop, evict it so the next RemainingUpdate spawns a fresh execute_lock that
+                // reads the current setting and runs the terminate path. A spurious evict+rearm
+                // here (e.g. this push didn't actually change preserve) is harmless: execute_lock
+                // re-checks locked_uids membership before terminating, so at worst this restarts
+                // the grace-period notification/lock/sleep cycle for a uid that was going to be
+                // terminated anyway.
                 {
                     let mut locked = self.locked_uids.lock().await;
                     for u in &push.users {
@@ -458,7 +462,7 @@ impl HeartbeatLoop {
                             let locked_uids = self.locked_uids.clone();
                             let db = self.db.clone();
                             tokio::spawn(async move {
-                                let rearm = match execute_lock(uid, &db).await {
+                                let rearm = match execute_lock(uid, &db, &locked_uids).await {
                                     Ok(rearm) => rearm,
                                     Err(e) => {
                                         tracing::error!("Lock failed for uid={uid}: {e}");
@@ -524,7 +528,7 @@ impl HeartbeatLoop {
                     let db = self.db.clone();
                     let locked_uids = self.locked_uids.clone();
                     tokio::spawn(async move {
-                        let rearm = match execute_lock(uid, &db).await {
+                        let rearm = match execute_lock(uid, &db, &locked_uids).await {
                             Ok(rearm) => rearm,
                             Err(e) => {
                                 tracing::error!("lock_now failed for uid={uid}: {e}");
@@ -700,7 +704,7 @@ impl HeartbeatLoop {
                             let db = self.db.clone();
                             let locked_uids = self.locked_uids.clone();
                             tokio::spawn(async move {
-                                let rearm = match execute_lock(uid, &db).await {
+                                let rearm = match execute_lock(uid, &db, &locked_uids).await {
                                     Ok(rearm) => rearm,
                                     Err(e) => {
                                         tracing::error!("Offline lock failed for uid={uid}: {e}");

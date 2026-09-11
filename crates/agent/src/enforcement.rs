@@ -117,7 +117,17 @@ fn lock_behavior(preserve_tasks_on_lock: bool) -> LockBehavior {
 }
 
 /// Execute a lock for a UID, preserving or terminating the session according to cached config.
-pub async fn execute_lock(uid: u32, db: &Arc<Mutex<Db>>) -> Result<bool> {
+///
+/// `locked_uids` is the same set the caller inserted `uid` into to arm this lock. It is
+/// re-checked after the grace-period sleep: if the block was lifted in the meantime (admin
+/// granted time, schedule window opened, midnight usage reset, preserve re-enabled, ...) the
+/// heartbeat/RemainingUpdate handler already removed `uid` from it, and this call must not
+/// blindly kill a session the user is now legitimately using just because one still exists.
+pub async fn execute_lock(
+    uid: u32,
+    db: &Arc<Mutex<Db>>,
+    locked_uids: &Arc<Mutex<HashSet<u32>>>,
+) -> Result<bool> {
     let (session_ids, grace_minutes, language, preserve_tasks) = {
         let db = db.lock().await;
         let sessions = db.get_all_session_ids(uid)?;
@@ -145,8 +155,17 @@ pub async fn execute_lock(uid: u32, db: &Arc<Mutex<Db>>) -> Result<bool> {
         return Ok(false);
     }
 
-    // Wait grace period, then terminate any still-active sessions.
+    // Wait grace period, then terminate any still-active sessions — but only if the
+    // block is still in effect.
     tokio::time::sleep(std::time::Duration::from_secs(grace_minutes as u64 * 60)).await;
+
+    if !locked_uids.lock().await.contains(&uid) {
+        tracing::info!(
+            "uid={uid}: grace period elapsed but enforcement was lifted in the meantime \
+             — not terminating"
+        );
+        return Ok(true);
+    }
 
     let still_active = {
         let db = db.lock().await;
@@ -204,7 +223,7 @@ pub async fn handle_midnight(
                 let db = db.clone();
                 let locked_uids = locked_uids.clone();
                 tokio::spawn(async move {
-                    let rearm = match execute_lock(uid, &db).await {
+                    let rearm = match execute_lock(uid, &db, &locked_uids).await {
                         Ok(rearm) => rearm,
                         Err(e) => {
                             tracing::error!("Midnight lock failed for uid={uid}: {e}");
