@@ -12,9 +12,10 @@
 # The agent always runs natively on the managed (child) machine — never in Docker.
 #
 # Quickstart:
-#   1. Set strong secrets for SCREENGUARD_SERVER_JWT_SECRET and SECRET_KEY below.
+#   1. Edit .env.example for local values.
 #   2. docker compose up -d
 #   3. Open http://<server-ip>:5000 and create an admin account.
+#   4. For VLAN clients, specify server IP
 
 services:
   server:
@@ -22,14 +23,14 @@ services:
       context: .
       dockerfile: deploy/Dockerfile.server
       args:
-        VERSION: latest   # pin to e.g. "v0.8.4" for reproducible deploys
+        VERSION: v0.10.0   # pinned, change if need newer version
     image: screenguard-server
     network_mode: host
     volumes:
-      - screenguard-data:/data
+      - ${DOCKER_VOLUME}/screenguard-data:/data # set docker data volulme mount point in ENV file
     environment:
       SCREENGUARD_SERVER_DB: /data/server.db
-      SCREENGUARD_SERVER_JWT_SECRET: change-me-in-production  # set a strong random value
+      SCREENGUARD_SERVER_JWT_SECRET: ${SG_SERVER_SECRET}  # set a strong random value in ENV file
     restart: unless-stopped
 
   webui:
@@ -40,14 +41,11 @@ services:
     network_mode: host
     environment:
       SERVER_URL: http://127.0.0.1:8080   # server is on the same host network
-      SECRET_KEY: change-me-in-production  # set a strong random value
+      SECRET_KEY: ${SG_WEBUI_SECRET}  # set a strong random value in ENV file
       UI_PORT: "5000"
     restart: unless-stopped
     depends_on:
       - server
-
-volumes:
-  screenguard-data:
 
 
 # ── Bridge networking (alternative) ───────────────────────────────────────────
