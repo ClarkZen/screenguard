@@ -11,6 +11,7 @@
 #
 # The agent always runs natively on the managed (child) machine — never in Docker.
 #
+# Edited to add .env variables for building with portainer from git
 # Quickstart:
 #   1. Edit .env.example for local values.
 #   2. docker compose up -d
