@@ -15,13 +15,13 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_DB: screenguard
-      POSTGRES_USER: screenguard
-      POSTGRES_PASSWORD: screenguard_dev
+      POSTGRES_DB: ${PG_DATABASE} # edit ENV file
+      POSTGRES_USER: ${PG_USER} # edit user in ENV file
+      POSTGRES_PASSWORD: ${PG_PASSWORD} # edit user password in ENV file
     volumes:
       - pg-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U screenguard -d screenguard"]
+      test: ["CMD-SHELL", "pg_isready -U $${PG_USER} -d $${PG_DATABASE}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -32,13 +32,13 @@ services:
       context: .
       dockerfile: deploy/Dockerfile.server
       args:
-        VERSION: latest
+        VERSION: v0.10.0 # pinned version for Portainer deployment, otherwise use latest
     image: screenguard-server-dev
     ports:
       - "8080:8080"
     environment:
-      DATABASE_URL: postgres://screenguard:screenguard_dev@postgres:5432/screenguard
-      SCREENGUARD_SERVER_JWT_SECRET: change-me-in-production
+      DATABASE_URL: postgres://${PG_USER}:${PG_PASSWORD}@postgres:5432/${PG_DATABASE}
+      SCREENGUARD_SERVER_JWT_SECRET: ${SG_SERVER_SECRET} # edit ENV file
     depends_on:
       postgres:
         condition: service_healthy
@@ -52,8 +52,8 @@ services:
     ports:
       - "5000:5000"
     environment:
-      SERVER_URL: http://server:8080
-      SECRET_KEY: change-me-in-production
+      SERVER_URL: ${SG_SERVER_URL} # edit ENV file (e.g. ws://192.168.1.120:8080)
+      SECRET_KEY: ${SG_WEBUI_SECRET} # edit ENV file
       UI_PORT: "5000"
     depends_on:
       - server
