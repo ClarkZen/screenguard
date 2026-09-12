@@ -9,15 +9,15 @@
 #
 # NOTE: mDNS auto-discovery does not work in bridge mode.
 # Agents on the LAN must point at the host IP explicitly:
-#   server_url = "http://<host-ip>:8080"
+#   server_url = "ws://<host-ip>:8080"
 
 services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_DB: ${PG_DATABASE} # edit ENV file
-      POSTGRES_USER: ${PG_USER} # edit user in ENV file
-      POSTGRES_PASSWORD: ${PG_PASSWORD} # edit user password in ENV file
+      POSTGRES_DB: ${PG_DATABASE}
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
     volumes:
       - pg-data:/var/lib/postgresql/data
     healthcheck:
