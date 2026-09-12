@@ -52,7 +52,7 @@ services:
     ports:
       - "5000:5000"
     environment:
-      SERVER_URL: http://server:8080 #${SG_SERVER_URL} # edit ENV file (e.g. ws://192.168.1.120:8080)
+      SERVER_URL: http://server:8080
       SECRET_KEY: ${SG_WEBUI_SECRET} # edit ENV file
       UI_PORT: "5000"
     depends_on:
