@@ -55,6 +55,7 @@
   "profile.message_placeholder": "Wyślij wiadomość do użytkownika…",
   "profile.btn_send": "Wyślij",
   "profile.status_unavailable": "Status niedostępny — brak połączonego agenta.",
+  "profile.stale_data_warning": "{agent} jest offline od {ago} — powyższe liczby mogą być nieaktualne.",
   "profile.card_limits": "Dzienne limity",
   "profile.badge_blocked": "zablokowany",
   "profile.btn_clear": "wyczyść",

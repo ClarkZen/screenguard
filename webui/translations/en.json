@@ -55,6 +55,7 @@
   "profile.message_placeholder": "Send a message to user…",
   "profile.btn_send": "Send",
   "profile.status_unavailable": "Status unavailable — no agent connected.",
+  "profile.stale_data_warning": "{agent} has been offline since {ago} — the numbers above may be stale.",
   "profile.card_limits": "Daily limits",
   "profile.badge_blocked": "blocked",
   "profile.btn_clear": "clear",

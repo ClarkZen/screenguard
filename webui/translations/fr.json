@@ -55,6 +55,7 @@
   "profile.message_placeholder": "Envoyer un message à l'utilisateur…",
   "profile.btn_send": "Envoyer",
   "profile.status_unavailable": "Statut indisponible — aucun agent connecté.",
+  "profile.stale_data_warning": "{agent} est hors ligne depuis {ago} — les chiffres ci-dessus peuvent être obsolètes.",
   "profile.card_limits": "Limites journalières",
   "profile.badge_blocked": "bloqué",
   "profile.btn_clear": "effacer",
