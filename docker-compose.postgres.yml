@@ -32,7 +32,7 @@ services:
       context: .
       dockerfile: deploy/Dockerfile.server
       args:
-        VERSION: v0.10.0 # pinned version for Portainer deployment, otherwise use latest
+        VERSION: v0.10.12 # pinned version 10-9-26 for Portainer deployment, otherwise use latest
     image: screenguard-server-dev
     ports:
       - "8080:8080"
