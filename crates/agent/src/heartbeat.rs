@@ -686,6 +686,15 @@ impl HeartbeatLoop {
         }
 
         if hb_users.is_empty() {
+            // No managed uid has an active session — nothing to report, but the
+            // connection must not go fully silent: the server force-closes it after
+            // WS_IDLE_TIMEOUT of no inbound messages at all, and every reconnect
+            // re-syncs today's cumulative usage total (see #13). An empty heartbeat
+            // is a normal no-op server-side and just keeps the connection alive.
+            if online {
+                ws_client::send(&self.outbound_tx, MSG_HEARTBEAT, &Heartbeat { users: Vec::new() })
+                    .await?;
+            }
             return Ok(());
         }
 
@@ -945,5 +954,100 @@ fn collect_recent_logs() -> Vec<String> {
             .map(|l| l.to_string())
             .collect(),
         Err(e) => vec![format!("Failed to read journal: {e}")],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use common::models::{UserConfig, UserStatus};
+    use uuid::Uuid;
+
+    fn user_config(uid: u32) -> UserConfig {
+        UserConfig {
+            local_uid: uid,
+            profile_id: Uuid::new_v4(),
+            status: UserStatus::Managed,
+            schedules: Vec::new(),
+            daily_limits: Vec::new(),
+            adjustments_today: 0,
+            adjustment_message: None,
+            lockout_grace_minutes: 5,
+            preserve_tasks_on_lock: false,
+            warning_thresholds_minutes: vec![15, 5, 1],
+            language: "en".to_string(),
+            blocked_domains: Vec::new(),
+        }
+    }
+
+    fn test_loop() -> (HeartbeatLoop, mpsc::Receiver<WssMessage>) {
+        let db = Db::open(Some(":memory:")).unwrap();
+        db.apply_config_push(&[user_config(1000)]).unwrap();
+
+        let (outbound_tx, outbound_rx) = mpsc::channel(8);
+        let (_inbound_tx, inbound_rx) = mpsc::channel(8);
+        let (_connection_tx, connection_rx) = mpsc::channel(8);
+        let (_session_tx, session_rx) = mpsc::channel(8);
+
+        let hb = HeartbeatLoop::new(
+            Arc::new(Mutex::new(db)),
+            outbound_tx,
+            inbound_rx,
+            connection_rx,
+            session_rx,
+            10,
+            300,
+            1000,
+            48,
+            None,
+            false,
+            None,
+        );
+        (hb, outbound_rx)
+    }
+
+    // Regression test for #13: once a managed uid's session count drops to
+    // zero, send_heartbeat used to return without sending anything at all —
+    // leaving the WebSocket fully silent and at the mercy of the server's 90s
+    // idle timeout, which forced a reconnect (and, separately, a duplicate
+    // usage_sync) even though nothing was actually wrong.
+    #[tokio::test]
+    async fn send_heartbeat_keeps_connection_alive_with_no_active_sessions() {
+        let (hb, mut outbound_rx) = test_loop();
+
+        // Nobody logged in — session_states has no entry for uid 1000.
+        let session_states: SessionStates = HashMap::new();
+        let mut active_since: HashMap<u32, Option<Instant>> = HashMap::new();
+
+        hb.send_heartbeat(&session_states, &mut active_since, true, "2026-09-14")
+            .await
+            .unwrap();
+
+        let msg = outbound_rx.try_recv().expect(
+            "agent must send something to keep the WebSocket connection alive \
+             even when no managed user has an active session",
+        );
+        assert_eq!(msg.msg_type, MSG_HEARTBEAT);
+        let payload: Heartbeat = serde_json::from_value(msg.payload).unwrap();
+        assert!(payload.users.is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_heartbeat_sends_users_normally_when_sessions_are_active() {
+        let (hb, mut outbound_rx) = test_loop();
+
+        let mut session_states: SessionStates = HashMap::new();
+        session_states.insert(1000, HashMap::from([("1".to_string(), SessionUsageState::default())]));
+        let mut active_since: HashMap<u32, Option<Instant>> = HashMap::new();
+
+        hb.send_heartbeat(&session_states, &mut active_since, true, "2026-09-14")
+            .await
+            .unwrap();
+
+        let msg = outbound_rx.try_recv().unwrap();
+        assert_eq!(msg.msg_type, MSG_HEARTBEAT);
+        let payload: Heartbeat = serde_json::from_value(msg.payload).unwrap();
+        assert_eq!(payload.users.len(), 1);
+        assert_eq!(payload.users[0].local_uid, 1000);
     }
 }

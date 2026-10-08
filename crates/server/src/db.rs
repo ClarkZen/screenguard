@@ -21,7 +21,7 @@ pub async fn open(cfg: &crate::config::ServerConfig) -> Result<DbPool> {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create DB directory: {}", parent.display()))?;
         }
-        (format!("sqlite:{}", cfg.db_path), true)
+        (format!("sqlite:{}?mode=rwc", cfg.db_path), true)
     };
 
     let pool = sqlx::AnyPool::connect(&url)
@@ -1291,6 +1291,41 @@ pub async fn add_usage_seconds(
     Ok(())
 }
 
+/// Reconciles a usage sync (MSG_USAGE_SYNC): the agent's own cumulative total for
+/// the day, sent as a snapshot rather than a delta. Unlike `add_usage_seconds`
+/// (used for genuine small per-heartbeat deltas, which must keep adding), this
+/// only ever advances the stored total up to the largest value it's seen — so a
+/// resend of the same (or an older, out-of-order) total is a safe no-op instead of
+/// silently double-counting the whole day. See #13.
+///
+/// The max is computed in the SQL itself (a portable CASE, not MAX()/GREATEST(),
+/// which differ between SQLite and Postgres) so the whole upsert stays atomic.
+pub async fn reconcile_usage_seconds(
+    pool: &DbPool,
+    agent_user_id: Uuid,
+    date: &str,
+    seconds: i64,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO daily_usage (agent_user_id, date, used_seconds, reported_at)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT(agent_user_id, date)
+         DO UPDATE SET used_seconds=CASE
+                           WHEN EXCLUDED.used_seconds > daily_usage.used_seconds
+                           THEN EXCLUDED.used_seconds
+                           ELSE daily_usage.used_seconds
+                       END,
+                       reported_at=EXCLUDED.reported_at",
+    )
+    .bind(agent_user_id.to_string())
+    .bind(date)
+    .bind(seconds)
+    .bind(Utc::now().timestamp())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn get_used_seconds_for_profile_today(
     pool: &DbPool,
     profile_id: Uuid,
@@ -1596,6 +1631,31 @@ mod tests {
         pool
     }
 
+    // Regression test for #15: a brand-new homelab install (fresh Docker volume,
+    // fresh `install.sh` run) points db_path at a file that doesn't exist yet.
+    // `open()` must create it — sqlx's SqliteConnectOptions defaults
+    // create_if_missing to false, so without `?mode=rwc` on the URL this used
+    // to fail with "(code: 14) unable to open database file" on first boot,
+    // while upgrades (where server.db already existed) never showed the bug.
+    #[tokio::test]
+    async fn open_creates_missing_sqlite_file_on_fresh_install() {
+        let dir = std::env::temp_dir().join(format!("screenguard-test-{}", Uuid::new_v4()));
+        let db_path = dir.join("server.db").to_string_lossy().to_string();
+        assert!(!std::path::Path::new(&db_path).exists());
+
+        let cfg = crate::config::ServerConfig {
+            db_path,
+            ..Default::default()
+        };
+
+        let pool = open(&cfg).await.expect("open() must create a missing sqlite db file");
+        // Sanity check the pool is actually usable, not just "connected".
+        create_profile(&pool, "Fresh install smoke test").await.unwrap();
+        pool.close().await;
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn new_profiles_default_preserve_tasks_to_false() {
         let pool = test_pool().await;
@@ -1793,5 +1853,103 @@ mod tests {
         let config = crate::remaining::build_config_push(&pool, agent_id, 1).await.unwrap();
         assert_eq!(config.users.len(), 1);
         assert_eq!(config.users[0].blocked_domains, vec!["youtube.com"]);
+    }
+
+    async fn test_agent_user(pool: &DbPool) -> Uuid {
+        let agent_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO agents
+             (id, machine_id, display_name, hostname, timezone, status, agent_version, created_at)
+             VALUES ($1, $2, 'host', 'host', 'UTC', 'paired', 'test', 1)",
+        )
+        .bind(agent_id.to_string())
+        .bind(agent_id.to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+        upsert_agent_users(
+            pool,
+            agent_id,
+            &[LocalUser {
+                local_uid: 1000,
+                username: "test".to_string(),
+                display_name: "Test User".to_string(),
+            }],
+        )
+        .await
+        .unwrap();
+        get_agent_user(pool, agent_id, 1000).await.unwrap().unwrap().id
+    }
+
+    // Regression test for #13: MSG_USAGE_SYNC carries the agent's whole locally-
+    // accumulated total for the day (a snapshot), not a delta, so it must never go
+    // through the plain-additive path that live per-heartbeat deltas use — that
+    // silently double-counts the entire day's usage on every reconnect-triggered
+    // resync. reconcile_usage_seconds must only ever advance the stored total up
+    // to the largest total it's been told about, never add on top of it.
+    #[tokio::test]
+    async fn reconcile_usage_seconds_does_not_double_count_a_resent_total() {
+        let pool = test_pool().await;
+        let agent_user_id = test_agent_user(&pool).await;
+
+        // Live heartbeats already brought the server to 3000s for today.
+        add_usage_seconds(&pool, agent_user_id, "2026-09-14", 3000).await.unwrap();
+
+        // The agent reconnects and resyncs its own cumulative total for today,
+        // which is the same 3000s the server already has — must not double it.
+        reconcile_usage_seconds(&pool, agent_user_id, "2026-09-14", 3000).await.unwrap();
+        assert_eq!(
+            get_used_seconds_for_profile_today_by_agent_user(&pool, agent_user_id, "2026-09-14").await,
+            3000
+        );
+
+        // Genuine new live usage still adds normally (untouched path).
+        add_usage_seconds(&pool, agent_user_id, "2026-09-14", 10).await.unwrap();
+        assert_eq!(
+            get_used_seconds_for_profile_today_by_agent_user(&pool, agent_user_id, "2026-09-14").await,
+            3010
+        );
+
+        // A sync that reflects genuinely more usage (e.g. accrued while offline)
+        // correctly advances the total.
+        reconcile_usage_seconds(&pool, agent_user_id, "2026-09-14", 3400).await.unwrap();
+        assert_eq!(
+            get_used_seconds_for_profile_today_by_agent_user(&pool, agent_user_id, "2026-09-14").await,
+            3400
+        );
+
+        // A stale/out-of-order resync with a smaller total must not regress it.
+        reconcile_usage_seconds(&pool, agent_user_id, "2026-09-14", 3000).await.unwrap();
+        assert_eq!(
+            get_used_seconds_for_profile_today_by_agent_user(&pool, agent_user_id, "2026-09-14").await,
+            3400
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_usage_seconds_on_first_sync_of_the_day_inserts_the_row() {
+        let pool = test_pool().await;
+        let agent_user_id = test_agent_user(&pool).await;
+
+        reconcile_usage_seconds(&pool, agent_user_id, "2026-09-14", 90).await.unwrap();
+        assert_eq!(
+            get_used_seconds_for_profile_today_by_agent_user(&pool, agent_user_id, "2026-09-14").await,
+            90
+        );
+    }
+
+    async fn get_used_seconds_for_profile_today_by_agent_user(
+        pool: &DbPool,
+        agent_user_id: Uuid,
+        date: &str,
+    ) -> i64 {
+        sqlx::query_scalar(
+            "SELECT used_seconds FROM daily_usage WHERE agent_user_id=$1 AND date=$2",
+        )
+        .bind(agent_user_id.to_string())
+        .bind(date)
+        .fetch_one(pool)
+        .await
+        .unwrap()
     }
 }

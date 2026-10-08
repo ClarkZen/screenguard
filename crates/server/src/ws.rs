@@ -288,7 +288,9 @@ async fn handle_agent_message(
             for entry in &sync.usage {
                 let date_str = entry.date.to_string();
                 if let Some(au) = db::get_agent_user(&state.db, agent_id, entry.local_uid).await? {
-                    db::add_usage_seconds(&state.db, au.id, &date_str, entry.used_seconds as i64).await?;
+                    // entry.used_seconds is the agent's whole cumulative total for the
+                    // day (a snapshot), not a delta — reconcile, don't add (#13).
+                    db::reconcile_usage_seconds(&state.db, au.id, &date_str, entry.used_seconds as i64).await?;
                 }
             }
         }
